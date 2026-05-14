@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: jenkins-app
-        image: ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com/jenkins-app:latest
+        image: IMAGE_PLACEHOLDER
         ports:
         - containerPort: 5000
         resources:
