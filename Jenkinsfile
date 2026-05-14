@@ -2,13 +2,10 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION     = 'ap-south-1'
-        CLUSTER_NAME   = 'jenkins-eks-cluster'
-        AWS_ACCOUNT_ID = '808999395477'
-        ECR_REPO       = '808999395477.dkr.ecr.ap-south-1.amazonaws.com'
-        IMAGE_NAME     = 'jenkins-app'
-        IMAGE_TAG      = "${BUILD_NUMBER}"
-        FULL_IMAGE     = '808999395477.dkr.ecr.ap-south-1.amazonaws.com/jenkins-app:${BUILD_NUMBER}'
+        AWS_REGION   = 'ap-south-1'
+        CLUSTER_NAME = 'jenkins-eks-cluster'
+        IMAGE_NAME   = 'jenkins-app'
+        IMAGE_TAG    = "${BUILD_NUMBER}"
     }
 
     stages {
@@ -24,23 +21,31 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                echo 'Building Docker image...'
-                sh '''
-                    docker build -t $ECR_REPO/$IMAGE_NAME:$IMAGE_TAG .
-                '''
+                withCredentials([
+                    string(credentialsId: 'aws-account-id',
+                           variable: 'AWS_ACCOUNT_ID')
+                ]) {
+                    sh '''
+                        docker build -t \
+                          $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:$IMAGE_TAG .
+                    '''
+                }
             }
         }
 
         stage('Push to ECR') {
             steps {
-                echo 'Pushing image to Amazon ECR...'
                 withCredentials([
+                    string(credentialsId: 'aws-account-id',
+                           variable: 'AWS_ACCOUNT_ID'),
                     string(credentialsId: 'aws-access-key-id',
                            variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'aws-secret-access-key',
                            variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
                     sh '''
+                        ECR_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
                         aws ecr get-login-password --region $AWS_REGION | \
                         docker login --username AWS \
                         --password-stdin $ECR_REPO
@@ -60,32 +65,37 @@ pipeline {
 
         stage('Deploy to EKS') {
             steps {
-                echo 'Deploying to EKS...'
-                sh '''
-                    aws eks update-kubeconfig \
-                      --region $AWS_REGION \
-                      --name $CLUSTER_NAME
+                withCredentials([
+                    string(credentialsId: 'aws-account-id',
+                           variable: 'AWS_ACCOUNT_ID')
+                ]) {
+                    sh '''
+                        ECR_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-                    echo "Connected to EKS - Nodes:"
-                    kubectl get nodes
+                        aws eks update-kubeconfig \
+                          --region $AWS_REGION \
+                          --name $CLUSTER_NAME
 
-                    sed -i "s|IMAGE_PLACEHOLDER|$ECR_REPO/$IMAGE_NAME:$IMAGE_TAG|g" \
-                      k8s/deployment.yaml
+                        echo "Connected to EKS - Nodes:"
+                        kubectl get nodes
 
-                    kubectl apply -f k8s/deployment.yaml
-                    kubectl apply -f k8s/service.yaml
+                        sed -i "s|IMAGE_PLACEHOLDER|$ECR_REPO/$IMAGE_NAME:$IMAGE_TAG|g" \
+                          k8s/deployment.yaml
 
-                    kubectl rollout status deployment/jenkins-app \
-                      --timeout=120s
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
 
-                    echo "Deployment Done!"
-                '''
+                        kubectl rollout status deployment/jenkins-app \
+                          --timeout=120s
+
+                        echo "Deployment Done!"
+                    '''
+                }
             }
         }
 
         stage('Verify') {
             steps {
-                echo 'Verifying deployment...'
                 sh '''
                     echo "--- Pods ---"
                     kubectl get pods -l app=jenkins-app
@@ -102,14 +112,18 @@ pipeline {
     }
 
     post {
-        success {
-            echo 'Pipeline Successful! App is live on EKS!'
-        }
-        failure {
-            echo 'Pipeline Failed! Check logs above.'
-        }
+        success { echo 'Pipeline Successful! App is live on EKS!' }
+        failure { echo 'Pipeline Failed! Check logs above.' }
         always {
-            sh 'docker rmi $ECR_REPO/$IMAGE_NAME:$IMAGE_TAG || true'
+            withCredentials([
+                string(credentialsId: 'aws-account-id',
+                       variable: 'AWS_ACCOUNT_ID')
+            ]) {
+                sh '''
+                    ECR_REPO=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    docker rmi $ECR_REPO/$IMAGE_NAME:$IMAGE_TAG || true
+                '''
+            }
         }
     }
 }
